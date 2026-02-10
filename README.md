@@ -178,6 +178,486 @@ For the React app, these are the paths actually used (for parity in the new back
 
 Replicate these relations and field names (or map them explicitly in Spring) so API request/response bodies stay compatible with the React app.
 
+
+
+
+# Manaliyo Backend – Domain Entities, Attributes & Relationships
+
+This document describes **all entities** (content types) in the Manaliyo backend: their attributes, types, and relationships. Use it to design your **MySQL schema** and **Spring Boot entities** when rewriting the backend.
+
+**Conventions:**
+- **Relation owner**: side that stores the foreign key (e.g. `user_Id` on BasicInformation points to User).
+- **InversedBy** / **MappedBy**: Strapi terms for the other side of the relation; in MySQL the FK is on the “owner” side.
+- **Enums** are listed with all allowed values.
+
+---
+
+## 1. Entity Relationship Overview
+
+```
+                    ┌─────────────────┐
+                    │  Subscription   │
+                    └────────┬────────┘
+                             │ 1:N (users)
+                             ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                                    User                                             │
+│  (core: username, email, password, role, approve, profile_pic, gallery, ...)        │
+└──┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬─┘
+   │      │      │      │      │      │      │      │      │      │      │      │
+   │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:1  │ 1:N  │ 1:N  │ ...
+   ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼      ▼
+ Basic  Contact Personal Family Partner Lifestyle Location Occup  Educ  Interests
+  Info    Info     Info   Backgr  Pref    Habit     Info   &Fin   -ations  &Hobbies
+   │      │         │        │      │        │        │      │        │
+   └──────┴─────────┴────────┴──────┴────────┴────────┴──────┴────────┘
+                    (each has user_Id → User)
+
+   User 1:N Request (to_user, from_user)  →  Match/connection requests
+   User 1:N Chat (sender, receiver)       →  Chat messages
+   User 1:1 OtpVerification               →  Latest OTP
+   User 1:1 UserImage                     →  image1–image4 URLs
+   User 1:1 BehavioralTrait              →  (optional)
+```
+
+---
+
+## 2. User (plugin::users-permissions.user)
+
+**Table name (Strapi):** `up_users`  
+**API:** `/users` (Strapi Users-Permissions plugin)
+
+Central entity: app user (mobile/username, email, profile data, and relations to all profile entities).
+
+### Attributes
+
+| Attribute            | Type      | Required | Default | Notes |
+|----------------------|-----------|----------|---------|--------|
+| id                   | integer   | (PK)     | -       | Auto |
+| username             | string    | yes      | -       | min 3, unique. In app = mobile number (e.g. 94771234567) |
+| email                | email     | yes      | -       | min 6 |
+| password             | password  | -        | -       | min 6, private (do not expose in API) |
+| provider             | string    | -        | -       | e.g. "local" |
+| resetPasswordToken   | string    | -        | -       | private |
+| confirmationToken    | string    | -        | -       | private |
+| confirmed            | boolean   | -        | false   | |
+| blocked              | boolean   | -        | false   | |
+| referenceNo          | string    | -        | -       | |
+| publish              | boolean   | -        | true    | |
+| approve              | boolean   | -        | true    | Profile visible in matches when true |
+| payment_type         | enumeration | -      | -       | Values: `free` |
+| profile_type         | enumeration | -      | -       | Values: `myself` |
+| profile_pic          | media     | -        | -       | Single (images/files/videos/audios) |
+| gallery              | media     | -        | -       | Multiple (images/files/videos/audios) |
+| role                 | relation  | -        | -       | manyToOne → Role (plugin) |
+| basic_information    | relation  | -        | -       | oneToOne ← BasicInformation (mappedBy) |
+| contact_information | relation  | -        | -       | oneToOne ← ContactInformation (mappedBy) |
+| personal_information| relation  | -        | -       | oneToOne ← PersonalInformation (mappedBy) |
+| family_background    | relation  | -        | -       | oneToOne ← FamilyBackground (mappedBy) |
+| interests_and_hobbies | relation | -        | -       | oneToMany ← InterestsAndHobbie (mappedBy) |
+| lifestyle_habit      | relation  | -        | -       | oneToOne ← LifestyleHabit (mappedBy) |
+| occupation_and_finance | relation | -        | -       | oneToOne ← OccupationAndFinance (mappedBy) |
+| educations           | relation  | -        | -       | oneToMany ← Education (mappedBy) |
+| location_information| relation  | -        | -       | oneToOne ← LocationInformation (inversedBy) |
+| user_image           | relation  | -        | -       | oneToOne ← UserImage (inversedBy) |
+| partner_preference   | relation  | -        | -       | oneToOne ← PartnerPreference (inversedBy) |
+| behavioral_trait     | relation  | -        | -       | oneToOne ← BehavioralTrait (mappedBy) |
+| otp_verification     | relation  | -        | -       | oneToOne ← OtpVerification (mappedBy) |
+| to_requests         | relation  | -        | -       | oneToMany ← Request as to_user (mappedBy) |
+| from_requests       | relation  | -        | -       | oneToMany ← Request as from_user (mappedBy) |
+| sender_chats        | relation  | -        | -       | oneToMany ← Chat as sender (mappedBy) |
+| receiver_chats      | relation  | -        | -       | oneToMany ← Chat as receiver (mappedBy) |
+| chats               | relation  | -        | -       | oneToMany ← Chat as receiver (mappedBy) – alias |
+| subscription        | relation  | -        | -       | manyToOne → Subscription (inversedBy users) |
+
+*Strapi adds `createdAt`, `updatedAt` where applicable.*
+
+---
+
+## 3. BasicInformation (api::basicinformation.basicinformation)
+
+**Table name (Strapi):** `basicinformations`  
+**API:** `/basicinformations`
+
+Core profile: name, demographics, location, religion, profession, media.
+
+### Attributes
+
+| Attribute   | Type     | Required | Notes |
+|------------|----------|----------|--------|
+| id         | integer  | PK       | Auto |
+| firstName  | string   | -        | |
+| lastName   | string   | -        | |
+| age        | integer  | -        | |
+| birthDate  | date     | -        | |
+| description| text     | -        | |
+| profession | string   | -        | |
+| gender     | enumeration | -     | Values: `male`, `female`, `other`, `not-specify` |
+| marital_status | enumeration | -  | Values: `single`, `married`, `divorced`, `widowed`, `separated` |
+| religion   | enumeration | -     | Values: `buddhism`, `hinduism`, `islam`, `christianity` |
+| district   | enumeration | -     | Values: `ampara`, `anuradhapura`, `badulla`, `batticaloa`, `colombo`, `galle`, `gampaha`, `hambantota`, `jaffna`, `kalutara`, `kandy`, `kegalle`, `kilinochchi`, `kurunegala`, `mannar`, `matale`, `matara`, `monaragala`, `mullaitivu`, `nuwara eliya`, `polonnaruwa`, `puttalam`, `ratnapura`, `trincomalee`, `vavuniya` |
+| profilePic | media    | -        | Multiple (images/files/videos/audios) |
+| gallery    | media    | -        | Multiple (images only) |
+| user_Id    | relation | -        | oneToOne → User (inversedBy: basic_information). **FK on this side.** |
+
+---
+
+## 4. ContactInformation (api::contactinformation.contactinformation)
+
+**Table name (Strapi):** `contactinformations`  
+**API:** `/contactinformations`
+
+Contact details.
+
+### Attributes
+
+| Attribute | Type     | Required | Notes |
+|-----------|----------|----------|--------|
+| id        | integer  | PK       | Auto |
+| email     | email    | -        | |
+| mobile    | string   | -        | |
+| user_Id   | relation | -        | oneToOne → User (inversedBy: contact_information). **FK on this side.** |
+
+---
+
+## 5. PersonalInformation (api::personal-information.personal-information)
+
+**Table name (Strapi):** `personal_informations`  
+**API:** `/personal-informations`
+
+Physical appearance.
+
+### Attributes
+
+| Attribute  | Type     | Required | Notes |
+|------------|----------|----------|--------|
+| id         | integer  | PK       | Auto |
+| height     | integer  | -        | |
+| weight     | integer  | -        | |
+| complexion | string   | -        | |
+| bodyType   | string   | -        | |
+| user_Id    | relation | -        | oneToOne → User (inversedBy: personal_information). **FK on this side.** |
+
+---
+
+## 6. FamilyBackground (api::family-background.family-background)
+
+**Table name (Strapi):** `family_backgrounds`  
+**API:** `/family-backgrounds`
+
+Family structure and background.
+
+### Attributes
+
+| Attribute        | Type     | Required | Notes |
+|------------------|----------|----------|--------|
+| id               | integer  | PK       | Auto |
+| motherName       | string   | -        | |
+| fatherName       | string   | -        | |
+| parentsInformation | string | -        | |
+| sistersCount     | integer  | -        | |
+| brothersCount    | integer  | -        | |
+| siblingsDetails  | string   | -        | |
+| nativePlace      | string   | -        | |
+| familyValues     | string   | -        | |
+| user_Id          | relation | -        | oneToOne → User (inversedBy: family_background). **FK on this side.** |
+
+---
+
+## 7. PartnerPreference (api::partner-preference.partner-preference)
+
+**Table name (Strapi):** `partner_preferences`  
+**API:** `/partner-preferences`
+
+Desired partner criteria.
+
+### Attributes
+
+| Attribute        | Type        | Required | Notes |
+|------------------|-------------|----------|--------|
+| id               | integer     | PK       | Auto |
+| age              | json        | -        | e.g. [min, max] |
+| height           | integer     | -        | |
+| city             | string      | -        | |
+| gender           | enumeration | -        | Values: `male`, `female`, `other`, `not-specify` |
+| highest_education| enumeration | -        | Values: `none`, `ordinary-level`, `advanced-level`, `diploma`, `bachelors`, `postgraduate-diploma`, `masters`, `phd`, `above-phd` |
+| religion         | enumeration | -        | Values: `buddhism`, `hinduism`, `islam`, `christianity` |
+| marital_status   | enumeration | -        | Values: `none`, `single`, `married`, `divorced`, `widowed`, `separated` |
+| drinking         | enumeration | -        | Values: `no`, `occasionally`, `yes` |
+| smoking          | enumeration | -        | Values: `no`, `occasionally`, `yes` |
+| district         | enumeration | -        | Same 25 districts as BasicInformation |
+| user_Id          | relation    | -        | oneToOne → User (mappedBy: partner_preference). **FK on this side.** |
+
+---
+
+## 8. Education (api::education.education)
+
+**Table name (Strapi):** `educations`  
+**API:** `/educations`
+
+One user can have multiple education entries (primary, secondary, professional).
+
+### Attributes
+
+| Attribute          | Type        | Required | Notes |
+|--------------------|-------------|----------|--------|
+| id                 | integer     | PK       | Auto |
+| institute          | string      | -        | |
+| description        | string      | -        | |
+| qualification_level| enumeration | -        | Values: `none`, `ordinary-level`, `advanced-level`, `diploma`, `bachelors`, `postgraduate-diploma`, `masters`, `phd`, `above-phd` |
+| completion_date    | date        | -        | |
+| education_type     | enumeration | yes      | Values: `professional`, `primary`, `secondary` |
+| user_Id            | relation    | -        | manyToOne → User (inversedBy: educations). **FK on this side.** |
+
+---
+
+## 9. InterestsAndHobbie (api::interests-and-hobbie.interests-and-hobbie)
+
+**Table name (Strapi):** `interests_and_hobbies`  
+**API:** `/interests-and-hobbies`
+
+One user can have multiple hobbies/interests.
+
+### Attributes
+
+| Attribute  | Type     | Required | Notes |
+|------------|----------|----------|--------|
+| id         | integer  | PK       | Auto |
+| hobby_name| string   | -        | |
+| description| string   | -        | |
+| user_Id    | relation | -        | manyToOne → User (inversedBy: interests_and_hobbies). **FK on this side.** |
+
+---
+
+## 10. LifestyleHabit (api::lifestyle-habit.lifestyle-habit)
+
+**Table name (Strapi):** `lifestyle_habits`  
+**API:** `/lifestyle-habits`
+
+Drinking and smoking habits.
+
+### Attributes
+
+| Attribute | Type        | Required | Notes |
+|-----------|-------------|----------|--------|
+| id        | integer     | PK       | Auto |
+| drinking  | enumeration | -        | Values: `no`, `occasionally`, `yes` |
+| smoking   | enumeration | -        | Values: `no`, `occasionally`, `yes` |
+| user_Id   | relation    | -        | oneToOne → User (inversedBy: lifestyle_habit). **FK on this side.** |
+
+---
+
+## 11. LocationInformation (api::location-information.location-information)
+
+**Table name (Strapi):** `location_informations`  
+**API:** `/location-informations`
+
+Address and residency.
+
+### Attributes
+
+| Attribute      | Type        | Required | Notes |
+|----------------|-------------|----------|--------|
+| id             | integer     | PK       | Auto |
+| streetAddress  | string      | -        | |
+| zipCode        | string      | -        | |
+| city           | string      | -        | |
+| country        | string      | -        | |
+| residencyStatus| enumeration | -        | Values: `resident`, `non-resident` |
+| user_Id        | relation    | -        | oneToOne → User (mappedBy: location_information). **FK on User side** (LocationInformation is inversedBy). |
+
+*In Strapi, relation is oneToOne with User; `mappedBy` means User owns the FK. In MySQL you can put `user_id` on `location_informations` for simplicity.*
+
+---
+
+## 12. OccupationAndFinance (api::occupation-and-finance.occupation-and-finance)
+
+**Table name (Strapi):** `occupation_and_finances`  
+**API:** `/occupation-and-finances`
+
+Job and income.
+
+### Attributes
+
+| Attribute        | Type     | Required | Notes |
+|------------------|----------|----------|--------|
+| id               | integer  | PK       | Auto |
+| occupation       | string   | -        | |
+| occupationDetails| string   | -        | |
+| employerName     | string   | -        | |
+| salary           | integer  | -        | |
+| user_Id          | relation | -        | oneToOne → User (inversedBy: occupation_and_finance). **FK on this side.** |
+
+---
+
+## 13. BehavioralTrait (api::behavioral-trait.behavioral-trait)
+
+**Table name (Strapi):** `behavioral_traits`  
+**API:** `/behavioral-traits`
+
+Optional behavioral trait; relation owned by User.
+
+### Attributes
+
+| Attribute | Type     | Required | Notes |
+|-----------|----------|----------|--------|
+| id        | integer  | PK       | Auto |
+| userId    | integer  | -        | Denormalized; relation is the source of truth |
+| user      | relation | -        | oneToOne → User (mappedBy: behavioral_trait). **FK on User side.** |
+
+---
+
+## 14. UserImage (api::user-image.user-image)
+
+**Table name (Strapi):** `user_images`  
+**API:** `/user-images`
+
+Stores up to 4 image URLs per user (e.g. S3 URLs from custom upload).
+
+### Attributes
+
+| Attribute | Type    | Required | Notes |
+|-----------|---------|----------|--------|
+| id        | integer | PK       | Auto |
+| image1    | string  | -        | URL |
+| image2    | string  | -        | URL |
+| image3    | string  | -        | URL |
+| image4    | string  | -        | URL |
+| user_Id   | relation| -        | oneToOne → User (mappedBy: user_image). **FK on User side.** |
+
+---
+
+## 15. OtpVerification (api::otp-verification.otp-verification)
+
+**Table name (Strapi):** `otp_verifications`  
+**API:** `/otp-verifications` (also custom routes `/otp/send`, `/otp/verify`)
+
+Stores latest OTP for a user (one row per user, updated on each send).
+
+### Attributes
+
+| Attribute          | Type     | Required | Notes |
+|--------------------|----------|----------|--------|
+| id                 | integer  | PK       | Auto |
+| latestOtp          | string   | -        | e.g. "1234" |
+| expirationTimestamp| integer  | -        | Optional expiry |
+| user               | relation | -        | oneToOne → User (mappedBy: otp_verification). **FK on this side.** |
+
+---
+
+## 16. Request (api::request.request)
+
+**Table name (Strapi):** `requests`  
+**API:** `/requests` (and custom `/request/create`, `/request/incoming/:id`, etc.)
+
+Match/connection request: one user sends a request to another; when accepted, it becomes a “match”.
+
+### Attributes
+
+| Attribute  | Type     | Required | Default | Notes |
+|------------|----------|----------|---------|--------|
+| id         | integer  | PK       | -       | Auto |
+| to_user    | relation | -        | -       | manyToOne → User (inversedBy: to_requests). **FK on this side.** Recipient. |
+| from_user  | relation | -        | -       | manyToOne → User (inversedBy: from_requests). **FK on this side.** Sender. |
+| accepted   | boolean  | yes      | false   | true = match (both can chat) |
+
+---
+
+## 17. Chat (api::chat.chat)
+
+**Table name (Strapi):** `chats`  
+**API:** `/chats` (and custom `/chat/create`, `/chat/userchat/:sender/:receiver`)
+
+A single chat message between two users.
+
+### Attributes
+
+| Attribute | Type     | Required | Notes |
+|-----------|----------|----------|--------|
+| id        | integer  | PK       | Auto |
+| message   | text     | yes      | |
+| sender    | relation | -        | manyToOne → User (inversedBy: sender_chats). **FK on this side.** |
+| receiver  | relation | -        | manyToOne → User (inversedBy: receiver_chats). **FK on this side.** |
+
+---
+
+## 18. Subscription (api::subscription.subscription)
+
+**Table name (Strapi):** `subscriptions`  
+**API:** `/subscriptions`
+
+Subscription plan; many users can have one subscription.
+
+### Attributes
+
+| Attribute   | Type     | Required | Notes |
+|-------------|----------|----------|--------|
+| id          | integer  | PK       | Auto |
+| name        | string   | -        | |
+| code        | string   | -        | |
+| description | text     | -        | |
+| price       | decimal  | -        | |
+| discount    | decimal  | -        | |
+| users       | relation | -        | oneToMany ← User (mappedBy: subscription). **FK on User side.** |
+
+---
+
+## 19. Media / Upload (Strapi core)
+
+Strapi uses a **media library** for `profile_pic`, `gallery`, and `profilePic`/`gallery` on BasicInformation. Typically stored in a table like `files` or `upload_file` with: id, name, url, mime, size, etc. In Spring Boot you can store URL or file id and serve files from disk/S3.
+
+---
+
+## 20. Role (plugin::users-permissions.role)
+
+**Table name (Strapi):** `up_roles`  
+Users have a manyToOne to Role (Authenticated, Public, etc.). For the app you may only need one “user” role; FK on User.
+
+---
+
+## 21. Summary: Foreign Keys for MySQL
+
+| Table (entity)           | Holds FK to   | Column name(s)     |
+|--------------------------|---------------|---------------------|
+| basicinformations        | User          | user_id             |
+| contactinformations      | User          | user_id             |
+| personal_informations    | User          | user_id             |
+| family_backgrounds       | User          | user_id             |
+| partner_preferences      | User          | user_id             |
+| educations               | User          | user_id             |
+| interests_and_hobbies   | User          | user_id             |
+| lifestyle_habits         | User          | user_id             |
+| location_informations    | User          | user_id             |
+| occupation_and_finances  | User          | user_id             |
+| user_images              | User          | user_id             |
+| otp_verifications        | User          | user_id             |
+| behavioral_traits       | User          | user_id (if FK here)|
+| requests                 | User          | to_user_id, from_user_id |
+| chats                    | User          | sender_id, receiver_id  |
+| up_users                 | Role          | role_id             |
+| up_users                 | Subscription  | subscription_id     |
+
+---
+
+## 22. Enum Reference (for MySQL ENUM or lookup tables)
+
+| Enum name           | Values |
+|---------------------|--------|
+| gender              | male, female, other, not-specify |
+| marital_status      | single, married, divorced, widowed, separated (plus `none` in partner_preference) |
+| religion            | buddhism, hinduism, islam, christianity |
+| district            | ampara, anuradhapura, badulla, batticaloa, colombo, galle, gampaha, hambantota, jaffna, kalutara, kandy, kegalle, kilinochchi, kurunegala, mannar, matale, matara, monaragala, mullaitivu, nuwara eliya, polonnaruwa, puttalam, ratnapura, trincomalee, vavuniya |
+| qualification_level / highest_education | none, ordinary-level, advanced-level, diploma, bachelors, postgraduate-diploma, masters, phd, above-phd |
+| education_type      | professional, primary, secondary |
+| drinking / smoking  | no, occasionally, yes |
+| residencyStatus    | resident, non-resident |
+| payment_type       | free |
+| profile_type       | myself |
+
+---
+
+*Use this document together with **API_ENDPOINTS.md** for the Spring Boot + MySQL rewrite.*
+
 ---
 
 *Generated from the current manaliyo-backend (Strapi 4). Use this as the single source of truth for the Java/Spring Boot/MySQL rewrite.*
